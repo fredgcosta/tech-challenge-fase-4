@@ -151,6 +151,8 @@ def run():
         s_train_df, s_val_df, s_test_df = standardize_data(train_df, val_df, test_df)
 
         val_array = np.array(s_val_df['Close'], dtype=np.float32)
+        x_valid = tf.constant(val_array)
+
         val_rnn_forecast = model.predict(val_array[np.newaxis, :, np.newaxis])
         val_rnn_forecast = val_rnn_forecast[0, :len(val_array), 0]
 
@@ -169,6 +171,14 @@ def run():
         fig.update_layout(width=1200, height=700)
 
         st.plotly_chart(fig)
+
+        mae = keras.metrics.MeanAbsoluteError()
+        mae.update_state(x_valid, val_rnn_forecast)
+
+        mse = keras.metrics.MeanSquaredError()
+        mse.update_state(x_valid, val_rnn_forecast)
+
+        st.write(f"Métricas: MeanAbsoluteError = {mae.result().numpy():,.5f}  |  MeanSquaredError = {mse.result().numpy():,.5f}")
 
     with tab1:
 
@@ -416,6 +426,8 @@ def run():
         s_train_df, s_val_df, s_test_df = standardize_data(train_df, val_df, test_df)
 
         test_array = np.array(s_test_df['Close'], dtype=np.float32)
+        x_test = tf.constant(test_array)
+
         test_rnn_forecast = model.predict(test_array[np.newaxis, :, np.newaxis])
         test_rnn_forecast = test_rnn_forecast[0, :len(test_array), 0]
 
@@ -434,6 +446,14 @@ def run():
         fig.update_layout(width=1200, height=700)
 
         st.plotly_chart(fig)
+
+        mae = keras.metrics.MeanAbsoluteError()
+        mae.update_state(x_test, test_rnn_forecast)
+
+        mse = keras.metrics.MeanSquaredError()
+        mse.update_state(x_test, test_rnn_forecast)
+
+        st.write(f"Métricas: MeanAbsoluteError = {mae.result().numpy():,.5f}  |  MeanSquaredError = {mse.result().numpy():,.5f}")
 
         st.markdown("""É válido lembrar, como foi citado na aba de insights, que eventos de grande magnitude podem causar um impacto significativo na economia global e consequentemente na variação do preço do Petróleo, dificultando a previsão e diminuindo a acertividade do modelo.""")
 
