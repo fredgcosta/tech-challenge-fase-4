@@ -20,14 +20,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import plotly.express as px
+import yfinance as yf
 
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 keras = tf.keras
 
 LOGGER = get_logger(__name__)
-
-
 
 @st.cache_resource
 def load_lstm_model():
@@ -39,6 +38,26 @@ def load_lstm_model():
 def get_data():
     df = pd.read_csv('Europe_Brent_Spot_Price_FOB.csv', parse_dates=True, index_col=0)
     df = df.sort_values(by='Date', ascending=True)
+    return df
+
+@st.cache_data
+def get_new_data():
+    df = get_data()
+
+    yf.pdr_override()
+    yf.set_tz_cache_location(".cache/py-yfinance")
+
+    # Especifique o símbolo do petróleo Brent (BZ=F) e o intervalo de datas desejado
+    symbol = 'BZ=F'
+    start_date = '2024-05-14'
+
+    # Use a função download para obter os dados
+    yf_brent = yf.download(symbol, start=start_date)
+    yf_brent = yf_brent.drop(columns=['Open', 'High', 'Low', 'Volume', 'Adj Close']) # Removendo colunas desnecessárias
+    yf_brent = yf_brent.sort_values(by='Date', ascending=True)
+    yf_brent.info()
+    df = pd.concat([df,yf_brent])
+
     df['Log Returns'] = np.log(df['Close']/df['Close'].shift(1)).dropna()
     return df
 
@@ -46,42 +65,21 @@ def standardize_data(train_df, val_df, test_df):
     train_mean = train_df.mean()
     train_std = train_df.std()
 
-    train_df = (train_df - train_mean) / train_std
-    val_df = (val_df - train_mean) / train_std
-    test_df = (test_df - train_mean) / train_std
+    s_train_df = (train_df - train_mean) / train_std
+    s_val_df = (val_df - train_mean) / train_std
+    s_test_df = (test_df - train_mean) / train_std
 
-    return train_df, val_df, test_df
+    return s_train_df, s_val_df, s_test_df
 
-def unstandardize_data(train_df, val_df, test_df):
+def unstandardize_data(train_df, s_train_df, s_val_df, s_test_df):
     train_mean = train_df.mean()
     train_std = train_df.std()
 
-    train_df =   (train_df * train_std) + train_mean
-    val_df = (val_df * train_std) + train_mean
-    test_df = (test_df * train_std) + train_mean
+    train_df = (s_train_df * train_std) + train_mean
+    val_df = (s_val_df * train_std) + train_mean
+    test_df = (s_test_df * train_std) + train_mean
 
     return train_df, val_df, test_df
-
-def standardize_data2(train_df, val_df, test_df):
-    train_mean = train_df.mean()
-    train_std = train_df.std()
-
-    train_df = (train_df - train_mean) / train_std
-    val_df = (val_df - train_mean) / train_std
-    test_df = (test_df - train_mean) / train_std
-
-    return train_df, val_df, test_df
-
-def unstandardize_data2(train_df, val_df, test_df):
-    train_mean = train_df.mean()
-    train_std = train_df.std()
-
-    train_df =   (train_df * train_std) + train_mean
-    val_df = (val_df * train_std) + train_mean
-    test_df = (test_df * train_std) + train_mean
-
-    return train_df, val_df, test_df
-
 
 def split_data(df):
     column_indices = {name: i for i, name in enumerate(df.columns)}
@@ -140,28 +138,33 @@ def run():
 
     with tab2:
 
-        st.markdown("""Para a reliazação do treinamento do modelo foi considerado o período de 1987 à 2012.""")
+        st.markdown("""Para a realização do treinamento do modelo foi considerado o período de 1987 à 2012.""")
         st.markdown("""A seguir temos o teste de validação do modelo onde utilizamos o período de 2013 à 2020 para tal verificação.""")
 
         model = load_lstm_model()
 
-        df = get_data()
+        df = get_new_data()
 
         df = df.drop(columns=['Log Returns']) # Removendo colunas desnecessárias
 
         train_df, val_df, test_df = split_data(df)
-        train_df, val_df, test_df = standardize_data(train_df, val_df, test_df)
+        s_train_df, s_val_df, s_test_df = standardize_data(train_df, val_df, test_df)
 
-        val_array = np.array(val_df['Close'], dtype=np.float32)
+        val_array = np.array(s_val_df['Close'], dtype=np.float32)
         val_rnn_forecast = model.predict(val_array[np.newaxis, :, np.newaxis])
         val_rnn_forecast = val_rnn_forecast[0, :len(val_array), 0]
+
+        novoDF = pd.DataFrame(val_df)
+        novoDF['Close'] = val_rnn_forecast
+
+        train_df, val_df, novoDF = unstandardize_data(train_df, s_train_df, s_val_df, novoDF)
 
         import plotly.graph_objs as go     
 
         fig = px.line(val_df, x=val_df.index, y='Close', title='Série temporal de fechamento')
         fig.update_xaxes(title_text='Data')
         fig.update_yaxes(title_text='Cotação')
-        fig.add_trace(go.Scatter(x=val_df.index, y=val_rnn_forecast, mode='lines', name='Previsão RNN'))
+        fig.add_trace(go.Scatter(x=novoDF.index, y=novoDF['Close'], mode='lines', name='Previsão RNN'))
 
         fig.update_layout(width=1200, height=700)
 
@@ -209,88 +212,192 @@ def run():
         st.markdown("""Abaixo segue o código do modelo LSTM utilizado para fazer a previsão:""")
 
         codigo_python = """
-            # Definir o dispositivo para a GPU se disponível
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            import os
+            import IPython.display
+            import matplotlib as mpl
+            import matplotlib.pyplot as plt
+            import numpy as np
+            import pandas as pd
+            import seaborn as sns
+            import tensorflow as tf
+            keras = tf.keras
+            os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+            tf.get_logger().setLevel('ERROR')
+            
+            %matplotlib inline
+            mpl.rcParams['figure.figsize'] = (20, 6)
+            mpl.rcParams['axes.grid'] = False
+            mpl.rcParams['font.size'] = 12
+            
+            print("Quantidade de GPUs disponíveis: ", len(tf.config.list_physical_devices('GPU')))
+            
+            brent = pd.read_csv('Europe_Brent_Spot_Price_FOB.csv', parse_dates=True, index_col=0)
+            brent = brent.sort_values(by='Date', ascending=True)
+            brent.info()
+            
+            df = brent.copy(deep=True)
+            df = df.drop(columns=['Log Returns']) # Removendo colunas desnecessárias
+      
+            # Separando os dados em treino, validação e teste
+            
+            column_indices = {name: i for i, name in enumerate(df.columns)}
 
-            # Carregar o DataFrame
-            df = pd.read_csv('/content/ipea.csv')
-
-            # Converter a coluna de data para datetime e depois para timestamp Unix
-            df['Data'] = pd.to_datetime(df['Data'], dayfirst=True)
-            df = df.sort_values(by='Data',ascending=True)
-            df['Timestamp'] = df['Data'].values.astype('int64') // 10**9
-
-            # Escalar a coluna de preços, já que os modelos de DL geralmente funcionam melhor com dados normalizados
-            scaler = MinMaxScaler(feature_range=(-1, 1))
-            df['Preço - petróleo bruto - Brent (FOB)'] = scaler.fit_transform(df['Preço - petróleo bruto - Brent (FOB)'].values.reshape(-1, 1)).astype('float32')
-
-            # Preparar dados para o PyTorch
-            X = df['Timestamp'].values.astype('float32')  # A entrada do modelo será o timestamp
-            y = df['Preço - petróleo bruto - Brent (FOB)'].values.astype('float32')  # A saída do modelo serão os preços
-
-            # Dividir o conjunto de dados em treinamento e teste
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-            # Converter os dados para Tensor
-            X_train_tensor = torch.tensor(X_train).view(-1, 1, 1)
-            y_train_tensor = torch.tensor(y_train).view(-1, 1, 1)
-            X_test_tensor = torch.tensor(X_test).view(-1, 1, 1)
-            y_test_tensor = torch.tensor(y_test).view(-1, 1, 1)
-
-            # Mover para o dispositivo apropriado
-            X_train_tensor = X_train_tensor.to(device)
-            y_train_tensor = y_train_tensor.to(device)
-            X_test_tensor = X_test_tensor.to(device)
-            y_test_tensor = y_test_tensor.to(device)
-
-            # Definir o modelo LSTM
-            class LSTMModel(nn.Module):
-                def __init__(self, input_size=1, hidden_layer_size=200, output_size=1):
-                    super(LSTMModel, self).__init__()
-                    self.hidden_layer_size = hidden_layer_size
-
-                    self.lstm = nn.LSTM(input_size, hidden_layer_size ,num_layers=3)
-
-                    self.linear = nn.Linear(hidden_layer_size, output_size)
-
-                def forward(self, input_seq):
-                    lstm_out, _ = self.lstm(input_seq)
-                    predictions = self.linear(lstm_out.view(len(input_seq), -1))
-                    return predictions[-1]
-
-            # Instanciar o modelo
-            model = LSTMModel().to(device)
-
-            # Definir a função de perda e o otimizador
-            loss_function = nn.MSELoss()
-            optimizer = Adam(model.parameters(), lr=0.0001)
-
-            # Treinar o modelo
-            epochs = 10
-            for i in range(epochs):
-                for seq, labels in zip(X_train_tensor, y_train_tensor):
-                    optimizer.zero_grad()
-
-                    model.hidden = (torch.zeros(1, 1, model.hidden_layer_size).to(device),
-                                    torch.zeros(1, 1, model.hidden_layer_size).to(device))
-
-                    y_pred = model(seq)
-
-                    single_loss = loss_function(y_pred, labels)
-                    single_loss.backward()
-                    optimizer.step()
-
-                    print(f'Epoch {i} loss: {single_loss.item()}')
-
-            model.eval()
-            with torch.no_grad():
-                preds = []
-                for i in range(len(X_test)):
-                    seq = X_test_tensor[i : i + 1]
-                    preds.append(model(seq).cpu().numpy()[0])
-
-            # Inverter a escala dos preços para a escala original
-            actual_predictions = scaler.inverse_transform(np.array(preds).reshape(-1, 1))
+            n = len(df)
+            train_df = df[0:int(n*0.7)]
+            val_df = df[int(n*0.7):int(n*0.9)]
+            test_df = df[int(n*0.9):]
+            
+            num_features = df.shape[1]
+            
+            # Normalizando os dados usando a fórmula (df - df.mean()) / df.std()
+            
+            train_mean = train_df.mean()
+            train_std = train_df.std()
+            
+            train_df = (train_df - train_mean) / train_std
+            val_df = (val_df - train_mean) / train_std
+            test_df = (test_df - train_mean) / train_std
+            
+            len_train_df = len(train_df)
+            len_val_df = len(val_df)
+            len_test_df = len(test_df)
+            
+            # Funções para plotar a previsão e criar os datasets de janelas sequenciais
+            
+            def plot_series(time, series, format="-", start=0, end=None, label=None):
+                plt.plot(time[start:end], series[start:end], format, label=label)
+                plt.xlabel("Time")
+                plt.ylabel("Value")
+                if label:
+                    plt.legend(fontsize=14)
+                plt.grid(True)
+            
+            def sequential_window_dataset(series, window_size):
+                series = tf.expand_dims(series, axis=-1)
+                ds = tf.data.Dataset.from_tensor_slices(series)
+                ds = ds.window(window_size + 1, shift=window_size, drop_remainder=True)
+                ds = ds.flat_map(lambda window: window.batch(window_size + 1))
+                ds = ds.map(lambda window: (window[:-1], window[1:]))
+                return ds.batch(1).prefetch(1)
+                
+            # preparando os dados no formato de numpy array
+                
+            x_train = np.array(train_df['Close'], dtype=np.float32)
+            x_train = tf.constant(x_train)
+            x_valid = np.array(val_df['Close'], dtype=np.float32)
+            x_valid = tf.constant(x_valid)
+            x_test = np.array(test_df['Close'], dtype=np.float32)
+            x_test = tf.constant(x_test)
+            
+            # Função de Callback do Keras para resetar o estado do modelo a cada epoch
+            
+            class ResetStatesCallback(keras.callbacks.Callback):
+                def on_epoch_begin(self, epoch, logs):
+                    if(model.name != 'sequential'):
+                        self.model.reset_states()
+            
+            # Encontrando o melhor valor para a taxa de aprendizado learning_rate do otimizador do modelo
+            
+            keras.backend.clear_session()
+            tf.random.set_seed(42)
+            np.random.seed(42)
+            
+            window_size = 30
+            train_set = sequential_window_dataset(x_train, window_size)
+            
+            model = keras.models.Sequential([
+                keras.Input(batch_shape=[1, None, 1]),
+                keras.layers.LSTM(100, return_sequences=True, stateful=True),
+                keras.layers.LSTM(100, return_sequences=True, stateful=True),
+                keras.layers.Dense(1),
+                keras.layers.Lambda(lambda x: x * 200.0)
+            ])
+            lr_schedule = keras.callbacks.LearningRateScheduler(lambda epoch: 1e-9 * 10**(epoch / 20))
+            reset_states = ResetStatesCallback()
+            optimizer = keras.optimizers.SGD(learning_rate=1e-9, momentum=0.9)
+            model.compile(loss=keras.losses.Huber(),
+                          optimizer=optimizer,
+                          metrics=[keras.metrics.MeanAbsoluteError(), keras.metrics.MeanSquaredError()])
+            history = model.fit(train_set, epochs=100, callbacks=[lr_schedule, reset_states])
+        
+            # Plotando o gráfico entre loss e learning_rate
+            
+            plt.semilogx(history.history["learning_rate"], history.history["loss"])
+            plt.axis([1e-9, 1e-4, 0, 10])
+            
+            #Encontramos o learning_rate ideal como sendo 5e-7, ou seja, 0.0000005
+            
+            # Treinamos novamente o modelo, usando o learning_rate = 5e-7 e agora usando os dados de validação para validar o modelo
+            
+            keras.backend.clear_session()
+            tf.random.set_seed(42)
+            np.random.seed(42)
+            
+            window_size = 30
+            train_set = sequential_window_dataset(x_train, window_size)
+            valid_set = sequential_window_dataset(x_valid, window_size)
+            
+            model = keras.models.Sequential([
+                keras.Input(batch_shape=[1, None, 1]),
+                keras.layers.LSTM(100, return_sequences=True, stateful=True),
+                keras.layers.LSTM(100, return_sequences=True, stateful=True),
+                keras.layers.Dense(1),
+                keras.layers.Lambda(lambda x: x * 200.0)
+            ])
+            optimizer = keras.optimizers.SGD(learning_rate=5e-7, momentum=0.9)
+            model.compile(loss=keras.losses.Huber(),
+                          optimizer=optimizer,
+                          metrics=[keras.metrics.MeanAbsoluteError(), keras.metrics.MeanSquaredError()])
+            reset_states = ResetStatesCallback()
+            model_checkpoint = keras.callbacks.ModelCheckpoint(
+                "lstm_model.keras", save_best_only=True)
+            early_stopping = keras.callbacks.EarlyStopping(patience=50)
+            model.fit(train_set, epochs=500,
+                      validation_data=valid_set,
+                      callbacks=[early_stopping, model_checkpoint, reset_states])
+            
+            #Salvamos o melhor modelo e em seguida carregamos novamente:
+            model = keras.models.load_model("lstm_model.keras", safe_mode=False)
+            
+            # Realizamos a previsão em cima dos dados de validação
+            val_array = np.array(val_df['Close'], dtype=np.float32)
+            val_rnn_forecast = model.predict(val_array[np.newaxis, :, np.newaxis])
+            val_rnn_forecast = val_rnn_forecast[0, :len(val_array), 0]
+            
+            #Plotamos os dados de validação e os dados previstos
+            plt.figure(figsize=(10, 6))
+            plot_series(time=val_df.index, series=val_df['Close'])
+            plot_series(time=val_df.index, series=val_rnn_forecast
+            
+            #Calculamos a performance do modelo usando a métrica de MeanAbsoluteError
+            mae = keras.metrics.MeanAbsoluteError()
+            mae.update_state(x_valid, val_rnn_forecast)
+            mae.result().numpy()
+            
+            #Calculamos a performance do modelo usando a métrica do MeanSquareError
+            mse = keras.metrics.MeanSquaredError()
+            mse.update_state(x_valid, val_rnn_forecast)
+            mse.result().numpy()
+            
+            #Realizamos novamente a previsão usando os dados de teste
+            test_array = np.array(test_df['Close'], dtype=np.float32)
+            test_rnn_forecast = model.predict(test_array[np.newaxis, :, np.newaxis])
+            test_rnn_forecast = test_rnn_forecast[0, :len(test_array), 0]
+            
+            #Plotamos os dados de teste com a previsão
+            plt.figure(figsize=(10, 6))
+            plot_series(time=test_df.index, series=test_df['Close'])
+            plot_series(time=test_df.index, series=test_rnn_forecast)
+            
+            #Calculamos a performance do modelo usando a métrica de MeanAbsoluteError
+            mae = keras.metrics.MeanAbsoluteError()
+            mae.update_state(x_test, test_rnn_forecast)
+            mae.result().numpy()
+            
+            #Calculamos a performance do modelo usando a métrica do MeanSquareError
+            mse = keras.metrics.MeanSquaredError()
+            mse.update_state(x_test, test_rnn_forecast)
+            mse.result().numpy()
         """
         st.code(codigo_python, language='python')
 
@@ -300,29 +407,29 @@ def run():
 
         model = load_lstm_model()
 
-        df = get_data()
+        df = get_new_data()
 
         df = df.drop(columns=['Log Returns']) # Removendo colunas desnecessárias
 
         train_df, val_df, test_df = split_data(df)
-        train_df1, val_df1, test_df1 = split_data(df)
-        train_df, val_df, test_df = standardize_data2(train_df, val_df, test_df)
+        # test_df = df[-30:]
+        s_train_df, s_val_df, s_test_df = standardize_data(train_df, val_df, test_df)
 
-        val_array = np.array(test_df['Close'], dtype=np.float32)
-        previsao = model.predict(val_array[np.newaxis, :, np.newaxis])
-        previsao = previsao[0, :len(val_array), 0]
+        test_array = np.array(s_test_df['Close'], dtype=np.float32)
+        test_rnn_forecast = model.predict(test_array[np.newaxis, :, np.newaxis])
+        test_rnn_forecast = test_rnn_forecast[0, :len(test_array), 0]
 
         import plotly.graph_objs as go 
 
         novoDF = pd.DataFrame(test_df)
-        novoDF['Close'] = previsao
+        novoDF['Close'] = test_rnn_forecast
 
-        train_df1, val_df1, novoDF = unstandardize_data2(train_df1, val_df1, novoDF)
+        train_df, val_df, u_novoDF = unstandardize_data(train_df, s_train_df, s_val_df, novoDF)
 
-        fig = px.line(test_df1, x=test_df1.index, y='Close', title='Série temporal de fechamento')
+        fig = px.line(test_df, x=test_df.index, y='Close', title='Série temporal de fechamento')
         fig.update_xaxes(title_text='Data')
         fig.update_yaxes(title_text='Cotação')
-        fig.add_trace(go.Scatter(x=test_df1.index, y=novoDF['Close'], mode='lines', name='Previsão RNN'))
+        fig.add_trace(go.Scatter(x=u_novoDF.index, y=u_novoDF['Close'], mode='lines', name='Previsão RNN'))
 
         fig.update_layout(width=1200, height=700)
 
