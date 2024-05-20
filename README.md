@@ -1,7 +1,13 @@
-# Welcome to streamlit
+# Tech Challenge Fase 4
 
-This is the app you get when you run `streamlit hello`, extracted as its own app.
+Membros do grupo 24:
 
-Edit [Hello.py](./app.py) to customize this app to your heart's desire. ❤️
+- RM351388 - Carolina Pasianot Casetta - carol_pasianot@hotmail.com
+- RM351418 - Gustavo França Severino - gustavofs.dt@gmail.com
+- RM352372 - Frederico Garcia Costa - fredgcosta@gmail.com
+- RM351905 - Jeferson Vieira - jvieirax@gmail.com
+- Victor Wilson Costa Lamana - victor.lamana15@gmail.com
 
-Check it out on [Streamlit Community Cloud](https://st-hello-app.streamlit.app/)
+Repositório do projeto: https://github.com/fredgcosta/tech-challenge-fase-4
+
+Url do Projeto no Streamlit: https://tech-challenge-fase-4.streamlit.app/
